@@ -1,6 +1,6 @@
 # Dock Management on macOS: From User Templates to Swift Tools
 
-![Managed macOS Dock baseline](assets/dock-management/dock-baseline-hero.svg)
+![Managed macOS Dock baseline](images/initial_login_dock_baseline_seed.png)
 
 For MacAdmins, the Dock has always been a deceptively small thing with a big operational footprint. It is the first place many users look for the tools they need, and it is one of the first places they notice when a Mac does not feel ready for work.
 
