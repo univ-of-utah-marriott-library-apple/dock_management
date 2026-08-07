@@ -8,7 +8,7 @@ That is why Dock management keeps coming back in admin conversations. The goal u
 
 ## A Short History of Dock Management
 
-![Dock management timeline](assets/dock-management/dock-management-timeline.svg)
+![Dock management timeline](images/dock_management_timeline.png)
 
 Early Dock management often started with the Default User Template. Admins would build or edit a default account experience, then rely on macOS to copy those preferences into each new user account. For a while, this felt natural: image the Mac, shape the template, and let new users inherit the setup.
 
@@ -95,7 +95,7 @@ The channel itself started in May 2016 with discussion focused on dockutil, and 
 
 ## Repeating Community Requests
 
-![Profile versus script decision guide](assets/dock-management/profile-vs-script-decision.svg)
+![Profile versus script decision guide](images/profile_or_script.png)
 
 If you spend time in MacAdmin Dock conversations, the same requests show up again and again. They are not repetitive because admins are missing something obvious. They are repetitive because Dock setup sits at the intersection of user identity, login timing, application installation, and Apple changing implementation details across macOS releases.
 
@@ -240,7 +240,7 @@ The most important choice is whether the Dock should be limited once or limited 
 
 ### How the Script Handles Timing
 
-![First-login Dock setup timing flow](assets/dock-management/first-login-timing-flow.svg)
+![First-login Dock setup timing flow](images/first_login_timing_flow.png)
 
 The Marriott Library template treats timing as a first-class problem instead of adding one large `sleep` and hoping for the best. That matters because Dock setup often runs during the noisy part of first login, when the user account exists but macOS may still be building preferences, launching Finder, starting the Dock, or applying default Dock items.
 
