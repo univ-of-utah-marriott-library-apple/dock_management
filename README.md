@@ -312,7 +312,6 @@ The `bash -n` command checks shell syntax only. It does not run the script or mo
 
 - dockutil GitHub repository: <https://github.com/kcrawford/dockutil>
 - University of Utah - Marriott Library - Apple Infrastructure GitHub organization: <https://github.com/univ-of-utah-marriott-library-apple>
-- Planned Marriott Library repository name: `dock-management`
 - MacAdmins Foundation and Slack join page: <https://www.macadmins.org/>
 - After joining the MacAdmins Slack, search for `#dock-management`.
 
