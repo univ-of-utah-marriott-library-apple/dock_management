@@ -282,7 +282,7 @@ That makes it a practical community template: conservative by default, customiza
 
 ### How to Download the Marriott Library Script
 
-After the Marriott Library `dock-management` repository is created, MacAdmins will be able to download the script in a few common ways.
+The Marriott Library dock-management repository has been created, and MacAdmins can download the script in a few common ways.
 
 **Web Browser**
 
