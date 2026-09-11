@@ -191,8 +191,8 @@ It is designed for an initial-login setup where student and staff Macs receive a
 - It skips missing optional items unless `REQUIRE_ALL_ITEMS=true`.
 - It waits for Dock, Finder, and a stable Dock plist before making changes.
 - It builds a single dockutil 3 action batch using `--no-restart`.
-- On the normal path, it restarts the Dock once at the end for current-user workflows.
-- It verifies the resulting Dock contents and retries once if verification fails.
+- On the normal path, it restarts the target user's Dock once before verification.
+- It restarts Dock before verifying the resulting contents and retries failed verification with separate dockutil actions.
 
 For a student/staff limited Dock, the main customization area is the site configuration block:
 
@@ -256,11 +256,11 @@ The script uses several small timing gates:
 - **Stability hash check**: It hashes the current Dock preferences and waits until the hash remains stable for the configured stable check count.
 - **Graceful timeout behavior**: If Dock stabilization does not happen within the short `dock_timeout=15` second window, it logs a warning and exits without changing the user's Dock. This preserves the macOS default Dock rather than applying changes during an unstable first-login state.
 - **Batched dockutil changes**: It builds one dockutil 3 action batch and adds `--no-restart` to each add/remove action, avoiding repeated Dock restarts during setup.
-- **Verification retry**: After setup, it lists and verifies the Dock contents. If verification fails, it runs one quick setup retry and verifies again.
-- **Controlled Dock restart**: On the normal path, it waits `DOCK_RESTART_DELAY=1` second, restarts the Dock once, retries that restart up to three times if needed, then waits up to 15 seconds for the Dock process to return. If verification fails and the quick retry path runs, that retry can also restart the Dock before the final restart handling.
+- **Verification retry**: After setup and a controlled Dock restart, it lists and verifies the Dock contents. If verification fails, it retries with separate dockutil actions instead of repeating the same batch, restarts Dock, and verifies again.
+- **Controlled Dock restart**: It waits `DOCK_RESTART_DELAY=1` second, restarts the target user's Dock before verification, retries that restart up to three times if needed, waits up to 15 seconds for a new user-specific Dock process, and gives that process time to load its preferences.
 - **Completion marker after success**: It writes the run-once marker only after setup and restart handling complete, so a failed or skipped first run does not incorrectly mark the user as done.
 
-In practice, this makes the script behave like a cautious first-login worker: wait for the right user, wait for the Dock to exist, wait for the Dock to stop changing, make the changes in one pass, verify the result, restart the Dock in a controlled way, and only then write the receipt.
+In practice, this makes the script behave like a cautious first-login worker: wait for the right user, wait for the Dock to exist, wait for the Dock to stop changing, make the changes in one pass, restart the Dock in a controlled way, verify the result, and only then write the receipt.
 
 ### How the Script Answers Community Questions
 

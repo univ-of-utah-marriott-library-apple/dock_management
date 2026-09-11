@@ -2,8 +2,8 @@
 #
 # Dock Setup Script - dockutil 3 Template
 #
-# Revised: 2026.08.06
-# Version: 2.4.0
+# Revised: 2026.09.10
+# Version: 2.4.1
 #
 # This script is designed to set up a managed Dock with dockutil 3. By default
 # it targets the active GUI user, but it can also target all homes, a specific
@@ -36,6 +36,7 @@
 #
 # Version History:
 #
+#   2.4.1 - Restart Dock before verification and use a sequential fallback after batch failures
 #   2.4.0 - Added generic MacAdmins options for targets, removals, positions, folders, and spacers
 #   2.3.1 - Added dockutil auto-detection and dockutil 3 multi-action batching
 #   2.3.0 - Made template community-friendly with site config, item filtering, and run-once marker
@@ -91,7 +92,7 @@ format_duration()
 # Script configuration
 SCRIPT_NAME="$(basename "$0")"
 readonly SCRIPT_NAME
-readonly SCRIPT_VERSION="2.4.0"
+readonly SCRIPT_VERSION="2.4.1"
 readonly MIN_DOCKUTIL_VERSION="3.0.0"  # Minimum required dockutil version
 
 ##################################
@@ -174,6 +175,7 @@ readonly -a DOCKUTIL_CANDIDATE_PATHS=(
 readonly KILLALL_PATH="/usr/bin/killall"
 readonly SCUTIL_PATH="/usr/sbin/scutil"
 readonly PGREP_PATH="/usr/bin/pgrep"
+readonly SUDO_PATH="/usr/bin/sudo"
 
 # Timeouts and intervals - optimized for speed
 readonly PROCESS_WAIT_TIMEOUT=30     # seconds
@@ -710,13 +712,31 @@ run_as_user()
         return 1
     fi
     
-    # Log the command with proper escaping
+    local -a user_command
     local cmd_str
-    printf -v cmd_str '%q ' "$@"
+
+    # launchctl asuser selects the user's bootstrap namespace but does not
+    # change the effective UID. Drop privileges when the script runs as root.
+    if [[ $EUID -eq 0 ]]; then
+        user_command=(
+            "$SUDO_PATH" -u "$LOGGED_IN_USER"
+            env
+            "HOME=/Users/$LOGGED_IN_USER"
+            "USER=$LOGGED_IN_USER"
+            "LOGNAME=$LOGGED_IN_USER"
+            "LANG=en_US.UTF-8"
+            "LC_ALL=en_US.UTF-8"
+            "$@"
+        )
+    else
+        user_command=(env LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 "$@")
+    fi
+
+    printf -v cmd_str '%q ' "${user_command[@]}"
     log_message "CMD" "launchctl asuser $USER_UID $cmd_str" >&2
-    
+
     local output
-    output=$(launchctl asuser "$USER_UID" env LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 "$@" 2>&1)
+    output=$(launchctl asuser "$USER_UID" "${user_command[@]}" 2>&1)
     local error_code=$?
     if [[ $error_code -ne 0 ]]; then
         log_message "ERROR" "Failed to execute command as user $LOGGED_IN_USER (exit code: $error_code)" >&2
@@ -1134,9 +1154,11 @@ build_dockutil_actions()
         app_name="$(basename "$app_path" .app)"
         DOCKUTIL_ACTIONS+=(
             "--add" "$app_path"
-            "--replacing" "$app_name"
             "--section" "$app_section"
         )
+        if [[ "$CLEAR_DOCK_FIRST" != true ]]; then
+            DOCKUTIL_ACTIONS+=("--replacing" "$app_name")
+        fi
         append_position_args "$app_position"
         DOCKUTIL_ACTIONS+=(
             "--no-restart"
@@ -1156,11 +1178,13 @@ build_dockutil_actions()
         folder_name="$(basename "$expanded_path")"
         DOCKUTIL_ACTIONS+=(
             "--add" "$expanded_path"
-            "--replacing" "$folder_name"
             "--section" "others"
             "--view" "$folder_view"
             "--display" "$folder_display"
         )
+        if [[ "$CLEAR_DOCK_FIRST" != true ]]; then
+            DOCKUTIL_ACTIONS+=("--replacing" "$folder_name")
+        fi
         if [[ -n "$folder_sort" ]]; then
             DOCKUTIL_ACTIONS+=("--sort" "$folder_sort")
         fi
@@ -1182,9 +1206,11 @@ build_dockutil_actions()
         DOCKUTIL_ACTIONS+=(
             "--add" "$url"
             "--label" "$label"
-            "--replacing" "$label"
             "--section" "$url_section"
         )
+        if [[ "$CLEAR_DOCK_FIRST" != true ]]; then
+            DOCKUTIL_ACTIONS+=("--replacing" "$label")
+        fi
         append_position_args "$url_position"
         DOCKUTIL_ACTIONS+=(
             "--no-restart"
@@ -1200,9 +1226,11 @@ build_dockutil_actions()
         app_name="$(basename "$app_path" .app)"
         DOCKUTIL_ACTIONS+=(
             "--add" "$app_path"
-            "--replacing" "$app_name"
             "--section" "$app_section"
         )
+        if [[ "$CLEAR_DOCK_FIRST" != true ]]; then
+            DOCKUTIL_ACTIONS+=("--replacing" "$app_name")
+        fi
         append_position_args "$app_position"
         DOCKUTIL_ACTIONS+=(
             "--no-restart"
@@ -1321,6 +1349,110 @@ setup_dock()
     return 0
 }
 
+run_sequential_dockutil_action()
+{
+    local -a action=("$@")
+
+    # The target path must be present on every invocation when actions that
+    # normally share one batch are executed separately.
+    if [[ "$DOCK_TARGET_MODE" == "current_user_home" ]]; then
+        action+=("/Users/$LOGGED_IN_USER")
+    fi
+
+    run_with_retry run_dockutil "${action[@]}"
+}
+
+setup_dock_sequential()
+{
+    local -a actions current_action
+    local token
+    local action_count=0
+
+    if ! build_dockutil_actions; then
+        log_message "ERROR" "Failed to build dockutil actions for sequential fallback"
+        return 1
+    fi
+
+    actions=("${DOCKUTIL_ACTIONS[@]}")
+
+    # build_dockutil_actions appends this target once for a batch. The fallback
+    # adds it to each individual action in run_sequential_dockutil_action.
+    if [[ "$DOCK_TARGET_MODE" == "current_user_home" ]]; then
+        unset "actions[$((${#actions[@]} - 1))]"
+    fi
+
+    current_action=()
+    for token in "${actions[@]}"; do
+        if [[ "$token" == "--add" || "$token" == "--remove" ]]; then
+            if ((${#current_action[@]} > 0)); then
+                if ! run_sequential_dockutil_action "${current_action[@]}"; then
+                    log_message "ERROR" "Sequential dockutil action failed"
+                    return 1
+                fi
+                ((action_count++))
+            fi
+            current_action=("$token")
+        else
+            current_action+=("$token")
+        fi
+    done
+
+    if ((${#current_action[@]} > 0)); then
+        if ! run_sequential_dockutil_action "${current_action[@]}"; then
+            log_message "ERROR" "Sequential dockutil action failed"
+            return 1
+        fi
+        ((action_count++))
+    fi
+
+    log_message "SUCCESS" "Applied $action_count dockutil actions separately"
+    return 0
+}
+
+restart_dock_and_wait()
+{
+    local old_pid=""
+    local new_pid=""
+    local restart_attempt=1
+    local elapsed=0
+    local max_restart_attempts=3
+    local restart_timeout=15
+
+    old_pid=$("$PGREP_PATH" -u "$USER_UID" -x Dock 2>/dev/null | head -n 1)
+    log_message "INFO" "Restarting Dock for $LOGGED_IN_USER before verification..."
+    sleep "$DOCK_RESTART_DELAY"
+
+    while ((restart_attempt <= max_restart_attempts)); do
+        if run_as_user "$KILLALL_PATH" Dock; then
+            break
+        fi
+
+        log_message "WARN" "Failed to restart Dock (attempt $restart_attempt/$max_restart_attempts)"
+        ((restart_attempt++))
+        sleep 2
+    done
+
+    if ((restart_attempt > max_restart_attempts)); then
+        log_message "ERROR" "Failed to restart Dock after $max_restart_attempts attempts"
+        return 1
+    fi
+
+    while ((elapsed < restart_timeout)); do
+        new_pid=$("$PGREP_PATH" -u "$USER_UID" -x Dock 2>/dev/null | head -n 1)
+        if [[ -n "$new_pid" && "$new_pid" != "$old_pid" ]]; then
+            # Allow the new Dock process to finish loading its preferences.
+            sleep 2
+            log_message "SUCCESS" "Dock restarted successfully with PID $new_pid"
+            return 0
+        fi
+        sleep 1
+        ((elapsed++))
+    done
+
+    log_message "ERROR" "Timed out waiting for Dock to restart for UID $USER_UID"
+    return 1
+}
+
 ##################################
 # Error Handling
 ##################################
@@ -1354,9 +1486,12 @@ error_handler()
     exit "$exit_code"
 }
 
-# Set up error handling and cleanup traps after defining their handlers.
-trap 'error_handler' ERR
-trap 'cleanup' EXIT
+# Set up error handling only when executing the script. Avoid changing the
+# caller's traps when functions are sourced for tests.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    trap 'error_handler' ERR
+    trap 'cleanup' EXIT
+fi
 
 ##################################
 # Main Execution
@@ -1444,15 +1579,36 @@ main()
         log_message "ERROR" "Dock setup failed"
         exit 1
     fi
-    
+
+    # Restart before verification so Dock cannot overwrite the freshly written
+    # preferences from its in-memory state and verification sees the new data.
+    if target_requires_gui_user && [[ "$RESTART_DOCK" == true ]]; then
+        if ! restart_dock_and_wait; then
+            log_message "ERROR" "Dock restart failed"
+            exit 1
+        fi
+    else
+        log_message "INFO" "Dock restart skipped for current settings"
+    fi
+
     # Verify dock contents
     if target_requires_gui_user && [[ "$VERIFY_DOCK_CONTENTS" == true ]] && ! verify_dock_contents; then
-        log_message "WARN" "Dock verification failed. Attempting one more setup in quick mode..."
-        # Quick retry with minimal checks
+        log_message "WARN" "Dock verification failed. Retrying with separate dockutil actions..."
+
+        # Use individual actions so the fallback does not repeat a possible
+        # dockutil multi-action batching failure.
         if ! setup_dock true; then
             log_message "ERROR" "Final dock setup attempt failed"
             exit 1
         fi
+
+        if [[ "$RESTART_DOCK" == true ]]; then
+            if ! restart_dock_and_wait; then
+                log_message "ERROR" "Dock restart after sequential retry failed"
+                exit 1
+            fi
+        fi
+
         # Verify one last time
         if ! verify_dock_contents; then
             log_message "ERROR" "Final dock verification failed"
@@ -1461,56 +1617,6 @@ main()
     elif [[ "$VERIFY_DOCK_CONTENTS" != true ]] || ! target_requires_gui_user; then
         log_message "INFO" "Dock content verification skipped for current settings"
     fi
-
-    # Restart the dock after all modifications
-    if [[ "$RESTART_DOCK" != true ]] || ! target_requires_gui_user; then
-        log_message "INFO" "Dock restart skipped for current settings"
-        log_separator
-        if ! write_completion_marker; then
-            log_message "ERROR" "Dock setup completed, but the completion marker could not be written"
-            exit 1
-        fi
-        log_message "SUCCESS" "Script completed successfully"
-        exit 0
-    fi
-
-    log_message "INFO" "Restarting dock to apply all changes..."
-    sleep $DOCK_RESTART_DELAY
-    
-    local restart_timeout=15
-    local restart_elapsed=0
-    local restart_attempts=0
-    local max_restart_attempts=3
-    
-    while ((restart_attempts < max_restart_attempts)); do
-        if ! run_as_user "$KILLALL_PATH" Dock; then
-            log_message "WARN" "Failed to restart dock (attempt $((restart_attempts + 1))/$max_restart_attempts)"
-            ((restart_attempts++))
-            sleep 2
-            continue
-        fi
-        break
-    done
-    
-    if ((restart_attempts >= max_restart_attempts)); then
-        log_message "ERROR" "Failed to restart dock after $max_restart_attempts attempts"
-        exit 1
-    fi
-    
-    # Wait for Dock process to come back with faster polling
-    while ! is_process_running "Dock"; do
-        if [[ $restart_elapsed -ge $restart_timeout ]]; then
-            log_message "ERROR" "Timeout waiting for Dock to restart"
-            exit 1
-        fi
-        sleep 1
-        restart_elapsed=$((restart_elapsed + 1))
-    done
-    
-    # Give the Dock a moment to fully initialize.
-    sleep 1
-    
-    log_message "SUCCESS" "Dock restart completed successfully"
     log_separator
 
     if ! write_completion_marker; then
@@ -1644,26 +1750,12 @@ verify_dock_contents()
 # shellcheck disable=SC2317  # Function is called indirectly through setup_dock with quick_mode=true.
 quick_setup_dock()
 {
-    # Skip repeat validation and most logging - this is a fast, last-resort attempt.
-    log_message "INFO" "Quick setup: Clearing dock and adding items..."
-
-    if ! build_dockutil_actions; then
-        log_message "ERROR" "Quick setup failed to build dockutil action batch"
-        return 1
-    fi
-
-    if ! run_dockutil "${DOCKUTIL_ACTIONS[@]}"; then
-        log_message "ERROR" "Quick setup failed to apply dockutil action batch"
-        return 1
-    fi
-
-    # Immediate restart for GUI-user workflows.
-    if [[ "$RESTART_DOCK" == true ]]; then
-        run_as_user "$KILLALL_PATH" Dock
-    fi
-
-    return 0
+    log_message "INFO" "Fallback setup: Applying dockutil actions separately..."
+    setup_dock_sequential
 }
 
-# Run main function
-main "$@"
+# Run main only when the script is executed, allowing its functions to be
+# sourced by syntax and action-building tests without changing a user's Dock.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
