@@ -2,8 +2,8 @@
 #
 # Dock Setup Script - dockutil 3 Template
 #
-# Revised: 2026.09.10
-# Version: 2.4.1
+# Revised: 2026.09.11
+# Version: 2.4.2
 #
 # This script is designed to set up a managed Dock with dockutil 3. By default
 # it targets the active GUI user, but it can also target all homes, a specific
@@ -17,7 +17,7 @@
 #   - Path validation for applications and folders
 #   - Configuration validation with missing item filtering
 #   - Optional once-per-user marker file
-#   - Performance optimizations with dockutil 3 multi-action batching
+#   - Optional dockutil 3 multi-action batching
 #
 # How to customize:
 #
@@ -30,12 +30,14 @@
 #
 #   - Current-user workflows run dockutil via launchctl asuser by default.
 #   - Current-user workflows wait for Dock and Finder before touching com.apple.dock.plist.
-#   - All dockutil add/remove actions are batched with --no-restart.
+#   - Dock items are applied sequentially by default for first-login reliability.
+#   - Optional dockutil 3 batching is available with BATCH_DOCKUTIL_ACTIONS=true.
 #   - Current-user workflows restart Dock once unless RESTART_DOCK=false.
 #   - This intentionally defaults to the active GUI user; allhomes/plist/home targets are optional.
 #
 # Version History:
 #
+#   2.4.2 - Default to sequential dockutil actions to avoid first-login batch verification failures
 #   2.4.1 - Restart Dock before verification and use a sequential fallback after batch failures
 #   2.4.0 - Added generic MacAdmins options for targets, removals, positions, folders, and spacers
 #   2.3.1 - Added dockutil auto-detection and dockutil 3 multi-action batching
@@ -92,7 +94,7 @@ format_duration()
 # Script configuration
 SCRIPT_NAME="$(basename "$0")"
 readonly SCRIPT_NAME
-readonly SCRIPT_VERSION="2.4.1"
+readonly SCRIPT_VERSION="2.4.2"
 readonly MIN_DOCKUTIL_VERSION="3.0.0"  # Minimum required dockutil version
 
 ##################################
@@ -129,6 +131,10 @@ readonly REQUIRE_ALL_ITEMS=false
 
 # Set false if you are only adding/removing a few items and do not want to clear the Dock first.
 readonly CLEAR_DOCK_FIRST=true
+
+# Set true to apply all dockutil add/remove actions in one dockutil invocation.
+# Sequential actions are slower, but more reliable during first-login Dock setup.
+readonly BATCH_DOCKUTIL_ACTIONS=false
 
 # Verification is helpful for current-user workflows. Non-GUI target modes skip
 # verification because --list is only meaningful for a specific active user.
@@ -1285,6 +1291,11 @@ validate_runtime_options()
         log_message "INFO" "CLEAR_DOCK_FIRST=true; REMOVE_ITEMS_FROM_DOCK will be ignored"
     fi
 
+    if [[ ! "$BATCH_DOCKUTIL_ACTIONS" =~ ^(true|false)$ ]]; then
+        log_message "ERROR" "BATCH_DOCKUTIL_ACTIONS must be true or false"
+        return 1
+    fi
+
     if ! target_requires_gui_user && [[ "$DOCK_TARGET_MODE" != "home" ]]; then
         for folder_record in "${ADD_FOLDERS_TO_DOCK[@]}"; do
             folder_path="$(field_at "$folder_record" 0)"
@@ -1295,6 +1306,8 @@ validate_runtime_options()
             fi
         done
     fi
+
+    return 0
 }
 
 target_requires_gui_user()
@@ -1335,14 +1348,23 @@ setup_dock()
     fi
 
     if ! build_dockutil_actions; then
-        log_message "ERROR" "Failed to build dockutil action batch"
+        log_message "ERROR" "Failed to build dockutil actions"
         return 1
     fi
-    log_message "INFO" "Applying dock changes in one dockutil run (${#DOCKUTIL_ACTIONS[@]} arguments)..."
 
-    if ! run_with_retry run_dockutil "${DOCKUTIL_ACTIONS[@]}"; then
-        log_message "ERROR" "Failed to apply dockutil action batch"
-        return 1
+    if [[ "$BATCH_DOCKUTIL_ACTIONS" == true ]]; then
+        log_message "INFO" "Applying dock changes in one dockutil run (${#DOCKUTIL_ACTIONS[@]} arguments)..."
+
+        if ! run_with_retry run_dockutil "${DOCKUTIL_ACTIONS[@]}"; then
+            log_message "ERROR" "Failed to apply dockutil action batch"
+            return 1
+        fi
+    else
+        log_message "INFO" "Applying dock changes as separate dockutil actions for first-login reliability..."
+        if ! setup_dock_sequential; then
+            log_message "ERROR" "Failed to apply dockutil actions separately"
+            return 1
+        fi
     fi
     
     log_message "SUCCESS" "Dock items setup completed"
@@ -1359,7 +1381,15 @@ run_sequential_dockutil_action()
         action+=("/Users/$LOGGED_IN_USER")
     fi
 
-    run_with_retry run_dockutil "${action[@]}"
+    if ! run_with_retry run_dockutil "${action[@]}"; then
+        return 1
+    fi
+
+    if [[ "${action[0]:-}" == "--remove" ]]; then
+        sleep 1
+    fi
+
+    return 0
 }
 
 setup_dock_sequential()
